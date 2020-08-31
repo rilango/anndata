@@ -17,7 +17,9 @@ from warnings import warn
 
 import h5py
 import numpy as np
-import scipy.sparse as ss
+import cupy.sparse as ss
+import cupyx
+import cupy
 from scipy.sparse import _sparsetools
 
 try:
@@ -368,7 +370,7 @@ class SparseDataset:
     def to_memory(self) -> ss.spmatrix:
         format_class = get_memory_class(self.format_str)
         mtx = format_class(self.shape, dtype=self.dtype)
-        mtx.data = self.group["data"][...]
-        mtx.indices = self.group["indices"][...]
-        mtx.indptr = self.group["indptr"][...]
+        mtx.data = cupy.asarray(self.group["data"][...])
+        mtx.indices = cupy.asarray(self.group["indices"][...])
+        mtx.indptr = cupy.asarray(self.group["indptr"][...])
         return mtx

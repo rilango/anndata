@@ -1,4 +1,5 @@
 import re
+import cupy
 import collections.abc as cabc
 from functools import _find_impl, partial
 from warnings import warn
@@ -10,6 +11,9 @@ from typing import Collection, Sequence, Mapping
 import h5py
 import numpy as np
 import pandas as pd
+
+import cudf as cd
+
 from pandas.api.types import is_categorical_dtype
 from scipy import sparse
 
@@ -343,7 +347,7 @@ def read_h5ad(
     backed: Union[Literal["r", "r+"], bool, None] = None,
     *,
     as_sparse: Sequence[str] = (),
-    as_sparse_fmt: Type[sparse.spmatrix] = sparse.csr_matrix,
+    as_sparse_fmt: Type[cupy.sparse.spmatrix] = cupy.sparse.csr_matrix,
     chunk_size: int = 6000,  # TODO, probably make this 2d chunks
 ) -> AnnData:
     """\
@@ -376,8 +380,8 @@ def read_h5ad(
             mode = "r+"
         assert mode in {"r", "r+"}
         return read_h5ad_backed(filename, mode)
-
-    if as_sparse_fmt not in (sparse.csr_matrix, sparse.csc_matrix):
+    if as_sparse_fmt not in (sparse.csr_matrix, sparse.csc_matrix,
+                             cupy.sparse.csr_matrix, cupy.sparse.csc_matrix):
         raise NotImplementedError(
             "Dense formats can only be read to CSR or CSC matrices at this time."
         )
@@ -457,12 +461,12 @@ def read_dataframe_legacy(dataset) -> pd.DataFrame:
 
 
 @report_read_key_on_error
-def read_dataframe(group) -> pd.DataFrame:
+def read_dataframe(group) -> cd.DataFrame:
     if not isinstance(group, h5py.Group):
         return read_dataframe_legacy(group)
     columns = list(group.attrs["column-order"])
     idx_key = group.attrs["_index"]
-    df = pd.DataFrame(
+    df = cd.DataFrame(
         {k: read_series(group[k]) for k in columns},
         index=read_series(group[idx_key]),
         columns=list(columns),
@@ -473,7 +477,7 @@ def read_dataframe(group) -> pd.DataFrame:
 
 
 @report_read_key_on_error
-def read_series(dataset) -> Union[np.ndarray, pd.Categorical]:
+def read_series(dataset) -> Union[np.ndarray, pd.Categorical, cd.Series]:
     if "categories" in dataset.attrs:
         categories = dataset.attrs["categories"]
         if isinstance(categories, h5py.Reference):
@@ -491,6 +495,10 @@ def read_series(dataset) -> Union[np.ndarray, pd.Categorical]:
             )
         return pd.Categorical.from_codes(dataset[...], categories, ordered=ordered)
     else:
+        s = cd.Series(dataset[...])
+        # print(type(dataset[...]))
+        # print(dataset[...])
+        # print(type(s))
         return dataset[...]
 
 
@@ -549,7 +557,11 @@ def read_dataset(dataset: h5py.Dataset):
 def read_dense_as_sparse(
     dataset: h5py.Dataset, sparse_format: sparse.spmatrix, axis_chunk: int
 ):
-    if sparse_format == sparse.csr_matrix:
+    print(':::::::::::::')
+    print(sparse_format)
+    if sparse_format == cupy.sparse.csr_matrix:
+        return read_dense_as_cupy_csr(dataset, axis_chunk)
+    elif sparse_format == sparse.csr_matrix:
         return read_dense_as_csr(dataset, axis_chunk)
     elif sparse_format == sparse.csc_matrix:
         return read_dense_as_csc(dataset, axis_chunk)
@@ -572,3 +584,12 @@ def read_dense_as_csc(dataset, axis_chunk=6000):
         sub_matrix = sparse.csc_matrix(dataset[idx])
         sub_matrices.append(sub_matrix)
     return sparse.hstack(sub_matrices, format="csc")
+
+
+def read_dense_as_cupy_csr(dataset, axis_chunk=6000):
+    sub_matrices = []
+    for idx in idx_chunks_along_axis(dataset.shape, 0, axis_chunk):
+        dense_chunk = dataset[idx]
+        sub_matrix = cupy.sparse.csr_matrix(dense_chunk)
+        sub_matrices.append(sub_matrix)
+    return cupy.vstack(sub_matrices, format="csr")

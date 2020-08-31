@@ -22,6 +22,10 @@ from pandas.api.types import is_string_dtype, is_categorical_dtype
 from scipy import sparse
 from scipy.sparse import issparse
 
+import cupy as cp
+import cudf as cd
+from cupy.sparse import issparse as cusissparse
+
 from .raw import Raw
 from .index import _normalize_indices, _subset, Index, Index1D, get_vector
 from .file_backing import AnnDataFileManager
@@ -61,6 +65,7 @@ class StorageType(Enum):
     Array = np.ndarray
     Masked = ma.MaskedArray
     Sparse = sparse.spmatrix
+    CuSparse = cp.sparse.spmatrix
     ZarrArray = ZarrArray
     ZappyArray = ZappyArray
     DaskArray = DaskArray
@@ -101,7 +106,7 @@ def _check_2d_shape(X):
 @singledispatch
 def _gen_dataframe(anno, length, index_names):
     if anno is None or len(anno) == 0:
-        return pd.DataFrame(index=pd.RangeIndex(0, length, name=None).astype(str))
+        return cd.DataFrame(index=cd.RangeIndex(0, length, name=None).astype(str))
     for index_name in index_names:
         if index_name in anno:
             return pd.DataFrame(
@@ -109,7 +114,7 @@ def _gen_dataframe(anno, length, index_names):
                 index=anno[index_name],
                 columns=[k for k in anno.keys() if k != index_name],
             )
-    return pd.DataFrame(anno, index=pd.RangeIndex(0, length, name=None).astype(str))
+    return cd.DataFrame(anno, index=cd.RangeIndex(0, length, name=None).astype(str))
 
 
 @_gen_dataframe.register(pd.DataFrame)
@@ -280,13 +285,13 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
 
     def __init__(
         self,
-        X: Optional[Union[np.ndarray, sparse.spmatrix, pd.DataFrame]] = None,
-        obs: Optional[Union[pd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
-        var: Optional[Union[pd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
+        X: Optional[Union[np.ndarray, sparse.spmatrix, cp.sparse.spmatrix, pd.DataFrame]] = None,
+        obs: Optional[Union[pd.DataFrame, cd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
+        var: Optional[Union[pd.DataFrame, cd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
         uns: Optional[Mapping[str, Any]] = None,
         obsm: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
         varm: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
-        layers: Optional[Mapping[str, Union[np.ndarray, sparse.spmatrix]]] = None,
+        layers: Optional[Mapping[str, Union[np.ndarray, cp.sparse.spmatrix, sparse.spmatrix]]] = None,
         raw: Optional[Mapping[str, Any]] = None,
         dtype: Union[np.dtype, str] = "float32",
         shape: Optional[Tuple[int, int]] = None,
@@ -461,7 +466,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 raise ValueError("`shape` needs to be `None` if `X` is not `None`.")
             _check_2d_shape(X)
             # if type doesn’t match, a copy is made, otherwise, use a view
-            if issparse(X) or isinstance(X, ma.MaskedArray):
+            if cusissparse(X) or issparse(X) or isinstance(X, ma.MaskedArray):
                 # TODO: maybe use view on data attribute of sparse matrix
                 #       as in readwrite.read_10x_h5
                 if X.dtype != np.dtype(dtype):

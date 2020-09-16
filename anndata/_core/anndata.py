@@ -1272,8 +1272,8 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 "which is currently not implemented. Call `.copy()` before transposing."
             )
 
-        def t_csr(m: sparse.spmatrix) -> sparse.csr_matrix:
-            return m.T.tocsr() if sparse.isspmatrix_csr(m) else m.T
+        def t_csr(m: cp.sparse.spmatrix) -> cp.sparse.csr_matrix:
+            return m.T.tocsr() if cp.sparse.isspmatrix_csr(m) else m.T
 
         return AnnData(
             t_csr(X),

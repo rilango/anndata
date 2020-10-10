@@ -28,11 +28,20 @@ except ImportError:
 
 from .index import unpack_index, Index
 
+try:
+    import cupy as cp 
+except:
+    cp = None
+
+SparseTypeUnion = Union[ss.spmatrix]
+if cp:
+    SparseTypeUnion = Union[SparseTypeUnion, cp.sparse.spmatrix]
+
 
 class BackedFormat(NamedTuple):
     format_str: str
     backed_type: Type["BackedSparseMatrix"]
-    memory_type: Type[ss.spmatrix]
+    memory_type: SparseTypeUnion
 
 
 class BackedSparseMatrix(_cs_matrix):
@@ -43,7 +52,7 @@ class BackedSparseMatrix(_cs_matrix):
     since that calls copy on `.data`, `.indices`, and `.indptr`.
     """
 
-    def copy(self) -> ss.spmatrix:
+    def copy(self) -> SparseTypeUnion:
         if isinstance(self.data, h5py.Dataset):
             return SparseDataset(self.data.parent).to_memory()
         else:
@@ -171,6 +180,11 @@ FORMATS = [
     BackedFormat("csc", backed_csc_matrix, ss.csc_matrix),
 ]
 
+if cp:
+    FORMATS.extend([
+        BackedFormat("csr_gpu", backed_csr_matrix, cp.sparse.csr_matrix),
+        BackedFormat("csc_gpu", backed_csc_matrix, cp.sparse.csc_matrix),
+    ])
 
 def slice_len(s: slice, l: int) -> int:
     """Returns length of `a[s]` where `len(a) == l`."""
@@ -228,8 +242,9 @@ def get_backed_class(format_str: str) -> Type[BackedSparseMatrix]:
 class SparseDataset:
     """Analogous to :class:`h5py.Dataset <h5py:Dataset>`, but for sparse matrices."""
 
-    def __init__(self, group: h5py.Group):
+    def __init__(self, group: h5py.Group, use_gpu=False):
         self.group = group
+        self.use_gpu = use_gpu
 
     @property
     def dtype(self) -> np.dtype:
@@ -358,7 +373,11 @@ class SparseDataset:
         indices[orig_data_size:] = sparse_matrix.indices
 
     def to_backed(self) -> BackedSparseMatrix:
-        format_class = get_backed_class(self.format_str)
+        format_str = self.format_str
+        if self.use_gpu:
+            format_str = format_str + '_gpu'
+        format_class = get_backed_class(format_str)
+
         mtx = format_class(self.shape, dtype=self.dtype)
         mtx.data = self.group["data"]
         mtx.indices = self.group["indices"]
@@ -366,9 +385,20 @@ class SparseDataset:
         return mtx
 
     def to_memory(self) -> ss.spmatrix:
-        format_class = get_memory_class(self.format_str)
+        format_str = self.format_str
+        if self.use_gpu:
+            format_str = format_str + '_gpu'
+        
+        format_class = get_memory_class(format_str)
         mtx = format_class(self.shape, dtype=self.dtype)
-        mtx.data = self.group["data"][...]
-        mtx.indices = self.group["indices"][...]
-        mtx.indptr = self.group["indptr"][...]
+        print('----------> ' + str(self.use_gpu))
+        if self.use_gpu:
+            mtx.data = cp.asarray(self.group["data"][...])
+            mtx.indices = cp.asarray(self.group["indices"][...])
+            mtx.indptr = cp.asarray(self.group["indptr"][...])
+        else:
+            mtx.data = self.group["data"][...]
+            mtx.indices = self.group["indices"][...]
+            mtx.indptr = self.group["indptr"][...]
+
         return mtx

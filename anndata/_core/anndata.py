@@ -56,6 +56,12 @@ from ..compat import (
     OverloadedDict,
 )
 
+try:
+    import cupy as cp 
+    import cudf as cd
+except:
+    cp = None
+    cd = None
 
 class StorageType(Enum):
     Array = np.ndarray
@@ -65,9 +71,35 @@ class StorageType(Enum):
     ZappyArray = ZappyArray
     DaskArray = DaskArray
 
+    if cp:
+        CuPySparse = cp.sparse.spmatrix
+
     @classmethod
     def classes(cls):
         return tuple(c.value for c in cls.__members__.values())
+
+
+XTypesUnion = Union[np.ndarray, sparse.spmatrix, pd.DataFrame]
+if cp and cd:
+    XTypesUnion = Union[XTypesUnion, cp.sparse.spmatrix, cd.DataFrame]
+
+
+DataFrameTypesUnion = Union[pd.DataFrame]
+if cp and cd:
+    DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
+
+
+NDArrayTypesUnions = Union[np.ndarray]
+if cp:
+    NDArrayTypesUnions = Union[NDArrayTypesUnions, cp.ndarray]
+
+
+MatrixTypesUnion = Union[np.ndarray, sparse.spmatrix]
+if cp:
+    MatrixTypesUnion = Union[MatrixTypesUnion, cp.sparse.spmatrix]
+SeriesTypeUnion = Union[np.ndarray, pd.Categorical]
+if cd:
+    SeriesTypeUnion = Union[SeriesTypeUnion, cd.Series]
 
 
 # for backwards compat
@@ -125,6 +157,21 @@ def _(anno, length, index_names):
 @_gen_dataframe.register(pd.Index)
 def _(anno, length, index_names):
     raise ValueError(f"Cannot convert {type(anno)} to DataFrame")
+
+if cd:
+    @_gen_dataframe.register(cd.DataFrame)
+    def _(anno, length, index_names):
+        anno = anno.copy()
+        if not is_string_dtype(anno.index):
+            warnings.warn("Transforming to str index.", ImplicitModificationWarning)
+            anno.index = anno.index.astype(str)
+        return anno
+
+
+    @_gen_dataframe.register(cd.Series)
+    @_gen_dataframe.register(cd.Index)
+    def _(anno, length, index_names):
+        raise ValueError(f"Cannot convert {type(anno)} to DataFrame")
 
 
 class ImplicitModificationWarning(UserWarning):
@@ -280,13 +327,13 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
 
     def __init__(
         self,
-        X: Optional[Union[np.ndarray, sparse.spmatrix, pd.DataFrame]] = None,
-        obs: Optional[Union[pd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
-        var: Optional[Union[pd.DataFrame, Mapping[str, Iterable[Any]]]] = None,
+        X: Optional[XTypesUnion] = None,
+        obs: Optional[Union[DataFrameTypesUnion, Mapping[str, Iterable[Any]]]] = None,
+        var: Optional[Union[DataFrameTypesUnion, Mapping[str, Iterable[Any]]]] = None,
         uns: Optional[Mapping[str, Any]] = None,
-        obsm: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
-        varm: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
-        layers: Optional[Mapping[str, Union[np.ndarray, sparse.spmatrix]]] = None,
+        obsm: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
+        varm: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
+        layers: Optional[Mapping[str, MatrixTypesUnion]] = None,
         raw: Optional[Mapping[str, Any]] = None,
         dtype: Union[np.dtype, str] = "float32",
         shape: Optional[Tuple[int, int]] = None,
@@ -294,10 +341,11 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         filemode: Optional[Literal["r", "r+"]] = None,
         asview: bool = False,
         *,
-        obsp: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
-        varp: Optional[Union[np.ndarray, Mapping[str, Sequence[Any]]]] = None,
+        obsp: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
+        varp: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
         oidx: Index1D = None,
         vidx: Index1D = None,
+        use_gpu: bool = False,
     ):
         if asview:
             if not isinstance(X, AnnData):
@@ -319,6 +367,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 varp=varp,
                 filename=filename,
                 filemode=filemode,
+                use_gpu=use_gpu,
             )
 
     def _init_as_view(self, adata_ref: "AnnData", oidx: Index, vidx: Index):
@@ -391,6 +440,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         shape=None,
         filename=None,
         filemode=None,
+        use_gpu=False,
     ):
         # view attributes
         self._is_view = False
@@ -398,6 +448,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         self._oidx = None
         self._vidx = None
 
+        self.use_gpu = use_gpu
         # ----------------------------------------------------------------------
         # various ways of initializing the data
         # ----------------------------------------------------------------------
@@ -461,7 +512,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 raise ValueError("`shape` needs to be `None` if `X` is not `None`.")
             _check_2d_shape(X)
             # if type doesn’t match, a copy is made, otherwise, use a view
-            if issparse(X) or isinstance(X, ma.MaskedArray):
+            if issparse(X) or isinstance(X, ma.MaskedArray) or (use_gpu and cp and cp.sparse.issparse(X)):
                 # TODO: maybe use view on data attribute of sparse matrix
                 #       as in readwrite.read_10x_h5
                 if X.dtype != np.dtype(dtype):

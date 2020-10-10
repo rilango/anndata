@@ -1,5 +1,7 @@
 import re
 import collections.abc as cabc
+
+from enum import Enum
 from functools import _find_impl, partial
 from warnings import warn
 from pathlib import Path
@@ -15,7 +17,7 @@ from scipy import sparse
 
 from .._core.sparse_dataset import SparseDataset
 from .._core.file_backing import AnnDataFileManager
-from .._core.anndata import AnnData
+from .._core.anndata import AnnData, DataFrameTypesUnion, SeriesTypeUnion, MatrixTypesUnion
 from .._core.raw import Raw
 from ..compat import _from_fixed_length_strings, _clean_uns, Literal
 from .utils import (
@@ -27,6 +29,17 @@ from .utils import (
     _read_legacy_raw,
     EncodingVersions,
 )
+
+try:
+    import cupy as cp 
+    import cudf as cd
+except:
+    cp = None
+    cd = None
+
+sparse_types = [sparse.csr_matrix, sparse.csc_matrix]
+if cp:
+    sparse_types.extend([cp.sparse.csr_matrix, cp.sparse.csc_matrix])
 
 
 H5Group = Union[h5py.Group, h5py.File]
@@ -345,6 +358,7 @@ def read_h5ad(
     as_sparse: Sequence[str] = (),
     as_sparse_fmt: Type[sparse.spmatrix] = sparse.csr_matrix,
     chunk_size: int = 6000,  # TODO, probably make this 2d chunks
+    use_gpu: bool = False,
 ) -> AnnData:
     """\
     Read `.h5ad`-formatted hdf5 file.
@@ -377,7 +391,7 @@ def read_h5ad(
         assert mode in {"r", "r+"}
         return read_h5ad_backed(filename, mode)
 
-    if as_sparse_fmt not in (sparse.csr_matrix, sparse.csc_matrix):
+    if as_sparse_fmt not in sparse_types:
         raise NotImplementedError(
             "Dense formats can only be read to CSR or CSC matrices at this time."
         )
@@ -408,9 +422,9 @@ def read_h5ad(
             elif k == "raw":
                 assert False, "unexpected raw format"
             elif k in {"obs", "var"}:
-                d[k] = read_dataframe(f[k])
+                d[k] = read_dataframe(f[k], use_gpu)
             else:  # Base case
-                d[k] = read_attribute(f[k])
+                d[k] = read_attribute(f[k], use_gpu)
 
         d["raw"] = _read_raw(f, as_sparse, rdasp)
 
@@ -424,6 +438,7 @@ def read_h5ad(
         else:
             raise ValueError()
 
+    d['use_gpu'] = use_gpu
     _clean_uns(d)  # backwards compat
 
     return AnnData(**d)
@@ -449,20 +464,24 @@ def _read_raw(
 
 
 @report_read_key_on_error
-def read_dataframe_legacy(dataset) -> pd.DataFrame:
+def read_dataframe_legacy(dataset, use_gpu=False) -> DataFrameTypesUnion:
     """Read pre-anndata 0.7 dataframes."""
-    df = pd.DataFrame(_from_fixed_length_strings(dataset[()]))
+
+    frwk = cd if use_gpu else pd
+    df = frwk.DataFrame(_from_fixed_length_strings(dataset[()]))
     df.set_index(df.columns[0], inplace=True)
     return df
 
 
 @report_read_key_on_error
-def read_dataframe(group) -> pd.DataFrame:
+def read_dataframe(group, use_gpu=False) -> DataFrameTypesUnion:
     if not isinstance(group, h5py.Group):
         return read_dataframe_legacy(group)
     columns = list(group.attrs["column-order"])
     idx_key = group.attrs["_index"]
-    df = pd.DataFrame(
+
+    frwk = cd if use_gpu else pd
+    df = frwk.DataFrame(
         {k: read_series(group[k]) for k in columns},
         index=read_series(group[idx_key]),
         columns=list(columns),
@@ -473,7 +492,7 @@ def read_dataframe(group) -> pd.DataFrame:
 
 
 @report_read_key_on_error
-def read_series(dataset) -> Union[np.ndarray, pd.Categorical]:
+def read_series(dataset) -> SeriesTypeUnion:
     if "categories" in dataset.attrs:
         categories = dataset.attrs["categories"]
         if isinstance(categories, h5py.Reference):
@@ -501,9 +520,9 @@ def read_series(dataset) -> Union[np.ndarray, pd.Categorical]:
 
 @read_attribute.register(h5py.Group)
 @report_read_key_on_error
-def read_group(group: h5py.Group) -> Union[dict, pd.DataFrame, sparse.spmatrix]:
+def read_group(group: h5py.Group, use_gpu=False) -> Union[dict, DataFrameTypesUnion, MatrixTypesUnion]:
     if "h5sparse_format" in group.attrs:  # Backwards compat
-        return SparseDataset(group).to_memory()
+        return SparseDataset(group, use_gpu=use_gpu).to_memory()
 
     encoding_type = group.attrs.get("encoding-type")
     if encoding_type:
@@ -515,7 +534,7 @@ def read_group(group: h5py.Group) -> Union[dict, pd.DataFrame, sparse.spmatrix]:
     elif encoding_type == "dataframe":
         return read_dataframe(group)
     elif encoding_type in {"csr_matrix", "csc_matrix"}:
-        return SparseDataset(group).to_memory()
+        return SparseDataset(group, use_gpu=use_gpu).to_memory()
     else:
         raise ValueError(f"Unfamiliar `encoding-type`: {encoding_type}.")
     d = dict()
@@ -553,6 +572,10 @@ def read_dense_as_sparse(
         return read_dense_as_csr(dataset, axis_chunk)
     elif sparse_format == sparse.csc_matrix:
         return read_dense_as_csc(dataset, axis_chunk)
+    elif sparse_format == cp.sparse.csr_matrix:
+        return read_dense_as_cupy_csr(dataset, axis_chunk)
+    elif sparse_format == cp.sparse.csc_matrix:
+        return read_dense_as_cupy_csc(dataset, axis_chunk)
     else:
         raise ValueError(f"Cannot read dense array as type: {sparse_format}")
 
@@ -572,3 +595,20 @@ def read_dense_as_csc(dataset, axis_chunk=6000):
         sub_matrix = sparse.csc_matrix(dataset[idx])
         sub_matrices.append(sub_matrix)
     return sparse.hstack(sub_matrices, format="csc")
+
+
+def read_dense_as_cupy_csr(dataset, axis_chunk=6000):
+    sub_matrices = []
+    for idx in idx_chunks_along_axis(dataset.shape, 0, axis_chunk):
+        dense_chunk = dataset[idx]
+        sub_matrix = cp.sparse.csr_matrix(dense_chunk)
+        sub_matrices.append(sub_matrix)
+    return cp.vstack(sub_matrices, format="csr")
+
+
+def read_dense_as_cupy_csc(dataset, axis_chunk=6000):
+    sub_matrices = []
+    for idx in idx_chunks_along_axis(dataset.shape, 1, axis_chunk):
+        sub_matrix = cp.sparse.csr_matrix(dataset[idx])
+        sub_matrices.append(sub_matrix)
+    return cp.hstack(sub_matrices, format="csc")

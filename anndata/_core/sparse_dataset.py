@@ -391,7 +391,6 @@ class SparseDataset:
         
         format_class = get_memory_class(format_str)
         mtx = format_class(self.shape, dtype=self.dtype)
-        print('----------> ' + str(self.use_gpu))
         if self.use_gpu:
             mtx.data = cp.asarray(self.group["data"][...])
             mtx.indices = cp.asarray(self.group["indices"][...])

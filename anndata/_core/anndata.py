@@ -89,9 +89,9 @@ if cp and cd:
     DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
 
 
-NDArrayTypesUnions = Union[np.ndarray]
+NDArrayTypesUnion = Union[np.ndarray]
 if cp:
-    NDArrayTypesUnions = Union[NDArrayTypesUnions, cp.ndarray]
+    NDArrayTypesUnion = Union[NDArrayTypesUnion, cp.ndarray]
 
 
 MatrixTypesUnion = Union[np.ndarray, sparse.spmatrix]

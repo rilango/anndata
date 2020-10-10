@@ -57,7 +57,8 @@ from ..compat import (
 )
 
 try:
-    import cupy as cp 
+    import cupy as cp
+    import cupyx as cpx
     import cudf as cd
 except:
     cp = None
@@ -72,7 +73,8 @@ class StorageType(Enum):
     DaskArray = DaskArray
 
     if cp:
-        CuPySparse = cp.sparse.spmatrix
+        CuArray = cp.core.core.ndarray
+        CuPySparseArray = cpx.scipy.sparse.spmatrix
 
     @classmethod
     def classes(cls):
@@ -81,7 +83,7 @@ class StorageType(Enum):
 
 XTypesUnion = Union[np.ndarray, sparse.spmatrix, pd.DataFrame]
 if cp and cd:
-    XTypesUnion = Union[XTypesUnion, cp.sparse.spmatrix, cd.DataFrame]
+    XTypesUnion = Union[XTypesUnion, cpx.scipy.sparse.spmatrix, cd.DataFrame]
 
 
 DataFrameTypesUnion = Union[pd.DataFrame]
@@ -89,18 +91,23 @@ if cp and cd:
     DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
 
 
-NDArrayTypesUnions = Union[np.ndarray]
+NDArrayTypesUnion = Union[np.ndarray]
 if cp:
-    NDArrayTypesUnions = Union[NDArrayTypesUnions, cp.ndarray]
+    NDArrayTypesUnion = Union[NDArrayTypesUnion, cp.ndarray]
 
 
 MatrixTypesUnion = Union[np.ndarray, sparse.spmatrix]
 if cp:
-    MatrixTypesUnion = Union[MatrixTypesUnion, cp.sparse.spmatrix]
+    MatrixTypesUnion = Union[MatrixTypesUnion, cp.ndarray, cpx.scipy.sparse.spmatrix]
+
+
 SeriesTypeUnion = Union[np.ndarray, pd.Categorical]
 if cd:
     SeriesTypeUnion = Union[SeriesTypeUnion, cd.Series]
 
+IndexTypeUnion = Union[pd.Index]
+if cd:
+    IndexTypeUnion = Union[IndexTypeUnion, cd.Index]
 
 # for backwards compat
 def _find_corresponding_multicol_key(key, keys_multicol):
@@ -131,21 +138,36 @@ def _check_2d_shape(X):
 
 
 @singledispatch
-def _gen_dataframe(anno, length, index_names):
+def _gen_dataframe(anno, use_gpu, length, index_names):
+
     if anno is None or len(anno) == 0:
-        return pd.DataFrame(index=pd.RangeIndex(0, length, name=None).astype(str))
+        if use_gpu:
+            return cd.DataFrame(index=cd.core.index.RangeIndex(0, length, name=None).astype(str))
+        else:
+            return pd.DataFrame(index=pd.RangeIndex(0, length, name=None).astype(str))
     for index_name in index_names:
         if index_name in anno:
-            return pd.DataFrame(
-                anno,
-                index=anno[index_name],
-                columns=[k for k in anno.keys() if k != index_name],
-            )
-    return pd.DataFrame(anno, index=pd.RangeIndex(0, length, name=None).astype(str))
+            if use_gpu:
+                return cd.DataFrame(
+                    anno,
+                    index=anno[index_name],
+                    columns=[k for k in anno.keys() if k != index_name],
+                )
+            else:
+                return pd.DataFrame(
+                    anno,
+                    index=anno[index_name],
+                    columns=[k for k in anno.keys() if k != index_name],
+                )
+    if use_gpu:
+        return cd.DataFrame(anno, index=cd.RangeIndex(0, length, name=None).astype(str))
+    else:
+        return pd.DataFrame(anno, index=pd.RangeIndex(0, length, name=None).astype(str))
+
 
 
 @_gen_dataframe.register(pd.DataFrame)
-def _(anno, length, index_names):
+def _(anno, use_gpu, length, index_names):
     anno = anno.copy()
     if not is_string_dtype(anno.index):
         warnings.warn("Transforming to str index.", ImplicitModificationWarning)
@@ -155,12 +177,12 @@ def _(anno, length, index_names):
 
 @_gen_dataframe.register(pd.Series)
 @_gen_dataframe.register(pd.Index)
-def _(anno, length, index_names):
+def _(anno, use_gpu, length, index_names):
     raise ValueError(f"Cannot convert {type(anno)} to DataFrame")
 
 if cd:
     @_gen_dataframe.register(cd.DataFrame)
-    def _(anno, length, index_names):
+    def _(anno, use_gpu, length, index_names):
         anno = anno.copy()
         if not is_string_dtype(anno.index):
             warnings.warn("Transforming to str index.", ImplicitModificationWarning)
@@ -170,7 +192,7 @@ if cd:
 
     @_gen_dataframe.register(cd.Series)
     @_gen_dataframe.register(cd.Index)
-    def _(anno, length, index_names):
+    def _(anno, use_gpu, length, index_names):
         raise ValueError(f"Cannot convert {type(anno)} to DataFrame")
 
 
@@ -331,8 +353,8 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         obs: Optional[Union[DataFrameTypesUnion, Mapping[str, Iterable[Any]]]] = None,
         var: Optional[Union[DataFrameTypesUnion, Mapping[str, Iterable[Any]]]] = None,
         uns: Optional[Mapping[str, Any]] = None,
-        obsm: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
-        varm: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
+        obsm: Optional[Union[NDArrayTypesUnion, Mapping[str, Sequence[Any]]]] = None,
+        varm: Optional[Union[NDArrayTypesUnion, Mapping[str, Sequence[Any]]]] = None,
         layers: Optional[Mapping[str, MatrixTypesUnion]] = None,
         raw: Optional[Mapping[str, Any]] = None,
         dtype: Union[np.dtype, str] = "float32",
@@ -341,12 +363,14 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         filemode: Optional[Literal["r", "r+"]] = None,
         asview: bool = False,
         *,
-        obsp: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
-        varp: Optional[Union[NDArrayTypesUnions, Mapping[str, Sequence[Any]]]] = None,
+        obsp: Optional[Union[NDArrayTypesUnion, Mapping[str, Sequence[Any]]]] = None,
+        varp: Optional[Union[NDArrayTypesUnion, Mapping[str, Sequence[Any]]]] = None,
         oidx: Index1D = None,
         vidx: Index1D = None,
         use_gpu: bool = False,
     ):
+        self.use_gpu = use_gpu
+
         if asview:
             if not isinstance(X, AnnData):
                 raise ValueError("`X` has to be an AnnData object.")
@@ -367,7 +391,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 varp=varp,
                 filename=filename,
                 filemode=filemode,
-                use_gpu=use_gpu,
             )
 
     def _init_as_view(self, adata_ref: "AnnData", oidx: Index, vidx: Index):
@@ -440,7 +463,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         shape=None,
         filename=None,
         filemode=None,
-        use_gpu=False,
     ):
         # view attributes
         self._is_view = False
@@ -448,7 +470,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         self._oidx = None
         self._vidx = None
 
-        self.use_gpu = use_gpu
         # ----------------------------------------------------------------------
         # various ways of initializing the data
         # ----------------------------------------------------------------------
@@ -494,6 +515,19 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                     x_indices.append(("var", "columns", X.columns))
                 X = ensure_df_homogeneous(X, "X")
 
+            elif cd and isinstance(X, cd.DataFrame):
+                self.use_gpu = True
+                # to verify index matching, we wait until obs and var are DataFrames
+                if obs is None:
+                    obs = cd.DataFrame(index=X.index)
+                elif not isinstance(X.index, cd.RangeIndex):
+                    x_indices.append(("obs", "index", X.index))
+                if var is None:
+                    var = cd.DataFrame(index=X.columns)
+                elif not isinstance(X.columns, cd.RangeIndex):
+                    x_indices.append(("var", "columns", X.columns))
+                X = ensure_df_homogeneous(X, "X")
+
         # ----------------------------------------------------------------------
         # actually process the data
         # ----------------------------------------------------------------------
@@ -512,13 +546,16 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 raise ValueError("`shape` needs to be `None` if `X` is not `None`.")
             _check_2d_shape(X)
             # if type doesn’t match, a copy is made, otherwise, use a view
-            if issparse(X) or isinstance(X, ma.MaskedArray) or (use_gpu and cp and cp.sparse.issparse(X)):
+            if issparse(X) or isinstance(X, ma.MaskedArray) or (cp and cpx.scipy.sparse.issparse(X)):
                 # TODO: maybe use view on data attribute of sparse matrix
                 #       as in readwrite.read_10x_h5
                 if X.dtype != np.dtype(dtype):
                     X = X.astype(dtype)
             elif isinstance(X, ZarrArray):
                 X = X.astype(dtype)
+            elif cp and isinstance(X, cp.core.core.ndarray):
+                self.use_gpu = True
+                X = cp.array(X, dtype, copy=False)
             else:  # is np.ndarray or a subclass, convert to true np.ndarray
                 X = np.array(X, dtype, copy=False)
             # data matrix and shape
@@ -542,13 +579,21 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                         raise ValueError("`shape` is inconsistent with `var`")
 
         # annotations
-        self._obs = _gen_dataframe(obs, self._n_obs, ["obs_names", "row_names"])
-        self._var = _gen_dataframe(var, self._n_vars, ["var_names", "col_names"])
+        self._obs = _gen_dataframe(obs, self.use_gpu, self._n_obs, ["obs_names", "row_names"])
+        self._var = _gen_dataframe(var, self.use_gpu, self._n_vars, ["var_names", "col_names"])
 
         # now we can verify if indices match!
         for attr_name, x_name, idx in x_indices:
             attr = getattr(self, attr_name)
-            if isinstance(attr.index, pd.RangeIndex):
+            # If for some reason index is pandas index and df is using cudf then
+            # do the conversion here.
+            if cd and \
+                isinstance(attr.index, cd.core.index.GenericIndex) and \
+                not isinstance(idx, cd.core.index.GenericIndex):
+                idx = cd.core.index.Index(idx)
+
+            if isinstance(attr.index, pd.RangeIndex) or \
+                (cd and isinstance(attr.index, cd.core.index.RangeIndex)):
                 attr.index = idx
             elif not idx.equals(attr.index):
                 raise ValueError(f"Index of {attr_name} must match {x_name} of X.")
@@ -635,14 +680,14 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         return self.n_obs, self.n_vars
 
     @property
-    def X(self) -> Optional[Union[np.ndarray, sparse.spmatrix, ArrayView]]:
+    def X(self) -> Optional[Union[MatrixTypesUnion, ArrayView]]:
         """Data matrix of shape :attr:`n_obs` × :attr:`n_vars`."""
         if self.isbacked:
             if not self.file.is_open:
                 self.file.open()
             X = self.file["X"]
             if isinstance(X, h5py.Group):
-                X = SparseDataset(X)
+                X = SparseDataset(X, use_gpu=self.use_gpu)
             # TODO: This should get replaced/ handled elsewhere
             # This is so that we can index into a backed dense dataset with
             # indices that aren’t strictly increasing
@@ -675,12 +720,15 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         #     return X
 
     @X.setter
-    def X(self, value: Optional[Union[np.ndarray, sparse.spmatrix]]):
+    def X(self, value: Optional[MatrixTypesUnion]):
+        self.use_gpu =  utils.use_gpu(value)
         if not isinstance(value, StorageType.classes()) and not np.isscalar(value):
             if hasattr(value, "to_numpy") and hasattr(value, "dtypes"):
                 value = ensure_df_homogeneous(value, "X")
+            elif self.use_gpu and isinstance(value, cd.DataFrame):
+                value = ensure_df_homogeneous(value, "X")
             else:  # TODO: asarray? asanyarray?
-                value = np.array(value)
+                value = np.array(value) if not self.use_gpu else cp.array(value)
         if value is None:
             if self.is_view:
                 raise ValueError(
@@ -699,15 +747,24 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
             and isinstance(self._vidx, np.ndarray)
         ):
             oidx, vidx = np.ix_(self._oidx, self._vidx)
+        elif (self.use_gpu
+            and self.is_view
+            and isinstance(self._oidx, cp.ndarray)
+            and isinstance(self._vidx, cp.ndarray)
+        ):
+            oidx, vidx = cp.ix_(self._oidx, self._vidx)
         else:
             oidx, vidx = self._oidx, self._vidx
+
         if (
             np.isscalar(value)
+            or (self.use_gpu and cp.isscalar(value))
             or (self.n_vars == 1 and self.n_obs == len(value))
             or (self.n_obs == 1 and self.n_vars == len(value))
             or self.shape == value.shape
         ):
-            if not np.isscalar(value) and self.shape != value.shape:
+            isscaler = np.isscalar(value) or (self.use_gpu and cp.isscalar(value))
+            if not isscaler and self.shape != value.shape:
                 # For assigning vector of values to 2d array or matrix
                 # Not neccesary for row of 2d array
                 value = value.reshape(self.shape)
@@ -725,6 +782,12 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                         value, np.ndarray
                     ):
                         value = sparse.coo_matrix(value)
+                    elif (self.use_gpu
+                          and cpx.scipy.sparse.issparse(self._adata_ref._X)
+                          and isinstance(value, cp.ndarray)
+                    ):
+                        value = cpx.scipy.sparse.coo_matrix(value)
+
                     self._adata_ref._X[oidx, vidx] = value
                 else:
                     self._X = value
@@ -837,7 +900,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         setattr(self, f"_{attr}", value)
         self._set_dim_index(value_idx, attr)
 
-    def _prep_dim_index(self, value, attr: str) -> pd.Index:
+    def _prep_dim_index(self, value, attr: str) -> IndexTypeUnion:
         """Prepares index to be uses as obs_names or var_names for AnnData object.AssertionError
 
         If a pd.Index is passed, this will use a reference, otherwise a new index object is created.
@@ -846,18 +909,30 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
             raise ValueError(
                 f"Length of passed value for {attr}_names is {len(value)}, but this AnnData has shape: {self.shape}"
             )
-        if isinstance(value, pd.Index) and not isinstance(
+
+        if cd and isinstance(value, cd.Index) and not isinstance(
             value.name, (str, type(None))
         ):
             raise ValueError(
                 f"AnnData expects .{attr}.index.name to be a string or None, "
                 f"but you passed a name of type {type(value.name).__name__!r}"
             )
+        elif isinstance(value, pd.Index) and not isinstance(
+            value.name, (str, type(None))
+        ):
+            raise ValueError(
+                f"AnnData expects .{attr}.index.name to be a string or None, "
+                f"but you passed a name of type {type(value.name).__name__!r}"
+            )
+        elif cd and isinstance(value, cd.Series):
+            value = cd.Index(value)
+            if not isinstance(value.name, (str, type(None))):
+                value.name = None
         else:
             value = pd.Index(value)
             if not isinstance(value.name, (str, type(None))):
                 value.name = None
-        if not isinstance(value, pd.RangeIndex) and not isinstance(
+        if not cd and not isinstance(value, pd.RangeIndex) and not isinstance(
             value[0], (str, bytes)
         ):
             logger.warning(
@@ -866,7 +941,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
             )
         return value
 
-    def _set_dim_index(self, value: pd.Index, attr: str):
+    def _set_dim_index(self, value: IndexTypeUnion, attr: str):
         # Assumes _prep_dim_index has been run
         if self.is_view:
             self._init_as_actual(self.copy())

@@ -28,7 +28,7 @@ class Raw:
         # construct manually
         if adata.isbacked == (X is None):
             self._X = X
-            self._var = _gen_dataframe(var, self.X.shape[1], ["var_names"])
+            self._var = _gen_dataframe(var, False, self.X.shape[1], ["var_names"])
             self._varm = AxisArrays(self, 1, varm)
         elif X is None:  # construct from adata
             self._X = adata.X.copy()

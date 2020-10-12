@@ -72,7 +72,7 @@ class StorageType(Enum):
     DaskArray = DaskArray
 
     if cp:
-        CuPySparse = cp.sparse.spmatrix
+        CuPySparseArray = cp.sparse.spmatrix
 
     @classmethod
     def classes(cls):

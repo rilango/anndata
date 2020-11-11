@@ -30,12 +30,13 @@ from .index import unpack_index, Index
 
 try:
     import cupy as cp 
+    import cupyx as cpx
 except:
     cp = None
 
 SparseTypeUnion = Union[ss.spmatrix]
 if cp:
-    SparseTypeUnion = Union[SparseTypeUnion, cp.sparse.spmatrix]
+    SparseTypeUnion = Union[SparseTypeUnion, cpx.scipy.sparse.spmatrix]
 
 
 class BackedFormat(NamedTuple):
@@ -182,8 +183,8 @@ FORMATS = [
 
 if cp:
     FORMATS.extend([
-        BackedFormat("csr_gpu", backed_csr_matrix, cp.sparse.csr_matrix),
-        BackedFormat("csc_gpu", backed_csc_matrix, cp.sparse.csc_matrix),
+        BackedFormat("csr_gpu", backed_csr_matrix, cpx.scipy.sparse.csr_matrix),
+        BackedFormat("csc_gpu", backed_csc_matrix, cpx.scipy.sparse.csc_matrix),
     ])
 
 def slice_len(s: slice, l: int) -> int:

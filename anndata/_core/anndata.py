@@ -57,7 +57,8 @@ from ..compat import (
 )
 
 try:
-    import cupy as cp 
+    import cupy as cp
+    import cupyx as cpx
     import cudf as cd
 except:
     cp = None
@@ -72,7 +73,8 @@ class StorageType(Enum):
     DaskArray = DaskArray
 
     if cp:
-        CuPySparseArray = cp.sparse.spmatrix
+        CuArray = cp.ndarray
+        CuPySparseArray = cpx.scipy.sparse.spmatrix
 
     @classmethod
     def classes(cls):
@@ -81,7 +83,7 @@ class StorageType(Enum):
 
 XTypesUnion = Union[np.ndarray, sparse.spmatrix, pd.DataFrame]
 if cp and cd:
-    XTypesUnion = Union[XTypesUnion, cp.sparse.spmatrix, cd.DataFrame]
+    XTypesUnion = Union[XTypesUnion, cpx.scipy.sparse.spmatrix, cd.DataFrame]
 
 
 DataFrameTypesUnion = Union[pd.DataFrame]
@@ -96,7 +98,9 @@ if cp:
 
 MatrixTypesUnion = Union[np.ndarray, sparse.spmatrix]
 if cp:
-    MatrixTypesUnion = Union[MatrixTypesUnion, cp.sparse.spmatrix]
+    MatrixTypesUnion = Union[MatrixTypesUnion, cpx.scipy.sparse.spmatrix]
+
+
 SeriesTypeUnion = Union[np.ndarray, pd.Categorical]
 if cd:
     SeriesTypeUnion = Union[SeriesTypeUnion, cd.Series]
@@ -345,7 +349,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         varp: Optional[Union[NDArrayTypesUnion, Mapping[str, Sequence[Any]]]] = None,
         oidx: Index1D = None,
         vidx: Index1D = None,
-        use_gpu: bool = False,
     ):
         if asview:
             if not isinstance(X, AnnData):
@@ -367,7 +370,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 varp=varp,
                 filename=filename,
                 filemode=filemode,
-                use_gpu=use_gpu,
             )
 
     def _init_as_view(self, adata_ref: "AnnData", oidx: Index, vidx: Index):
@@ -440,7 +442,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         shape=None,
         filename=None,
         filemode=None,
-        use_gpu=False,
     ):
         # view attributes
         self._is_view = False
@@ -448,7 +449,6 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         self._oidx = None
         self._vidx = None
 
-        self.use_gpu = use_gpu
         # ----------------------------------------------------------------------
         # various ways of initializing the data
         # ----------------------------------------------------------------------
@@ -494,6 +494,18 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                     x_indices.append(("var", "columns", X.columns))
                 X = ensure_df_homogeneous(X, "X")
 
+            elif cd and isinstance(X, cd.DataFrame):
+                # to verify index matching, we wait until obs and var are DataFrames
+                if obs is None:
+                    obs = cd.DataFrame(index=X.index)
+                elif not isinstance(X.index, cd.RangeIndex):
+                    x_indices.append(("obs", "index", X.index))
+                if var is None:
+                    var = cd.DataFrame(index=X.columns)
+                elif not isinstance(X.columns, cd.RangeIndex):
+                    x_indices.append(("var", "columns", X.columns))
+                X = ensure_df_homogeneous(X, "X")
+
         # ----------------------------------------------------------------------
         # actually process the data
         # ----------------------------------------------------------------------
@@ -512,13 +524,15 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 raise ValueError("`shape` needs to be `None` if `X` is not `None`.")
             _check_2d_shape(X)
             # if type doesn’t match, a copy is made, otherwise, use a view
-            if issparse(X) or isinstance(X, ma.MaskedArray) or (use_gpu and cp and cp.sparse.issparse(X)):
+            if issparse(X) or isinstance(X, ma.MaskedArray) or (cp and cpx.scipy.sparse.issparse(X)):
                 # TODO: maybe use view on data attribute of sparse matrix
                 #       as in readwrite.read_10x_h5
                 if X.dtype != np.dtype(dtype):
                     X = X.astype(dtype)
             elif isinstance(X, ZarrArray):
                 X = X.astype(dtype)
+            elif cp and isinstance(X, cp.core.core.ndarray):
+                X = cp.array(X, dtype, copy=False)
             else:  # is np.ndarray or a subclass, convert to true np.ndarray
                 X = np.array(X, dtype, copy=False)
             # data matrix and shape

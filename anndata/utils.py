@@ -12,6 +12,24 @@ from ._core.sparse_dataset import SparseDataset
 
 logger = get_logger(__name__)
 
+try:
+    import cupy as cp
+    import cudf as cd
+    import cupyx as cpx
+except:
+    cp = None
+    cd = None
+
+
+DataFrameTypesUnion = Union[pd.DataFrame]
+if cp and cd:
+    DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
+
+
+ArrayTypesUnion = Union[np.ndarray, sparse.csr_matrix]
+if cp and cd:
+    ArrayTypesUnion = Union[ArrayTypesUnion, cp.ndarray, cpx.scipy.sparse.csr_matrix,]
+
 
 @singledispatch
 def asarray(x):
@@ -129,10 +147,9 @@ def warn_names_duplicates(attr: str):
     )
 
 
-def ensure_df_homogeneous(
-    df: pd.DataFrame, name: str
-) -> Union[np.ndarray, sparse.csr_matrix]:
-    # TODO: rename this function, I would not expect this to return a non-dataframe
+def _ensure_panda_df_homogeneous(
+    df: cd.DataFrame, name: str
+) -> Union[cp.ndarray, cpx.scipy.sparse.csr_matrix]:
     if all(isinstance(dt, pd.SparseDtype) for dt in df.dtypes):
         arr = df.sparse.to_coo().tocsr()
     else:
@@ -140,6 +157,29 @@ def ensure_df_homogeneous(
     if df.dtypes.nunique() != 1:
         warnings.warn(f"{name} converted to numpy array with dtype {arr.dtype}")
     return arr
+
+
+def _ensure_cudf_df_homogeneous(
+    df: pd.DataFrame, name: str
+) -> Union[np.ndarray, sparse.csr_matrix]:
+    if all(isinstance(dt, pd.SparseDtype) for dt in df.dtypes):
+        arr = df.sparse.to_coo().tocsr()
+    else:
+        arr = cp.array(df.as_gpu_matrix())
+    if df.dtypes.nunique() != 1:
+        warnings.warn(f"{name} converted to numpy array with dtype {arr.dtype}")
+    return arr
+
+
+def ensure_df_homogeneous(
+    df: DataFrameTypesUnion, name: str
+) -> ArrayTypesUnion:
+    # TODO: rename this function, I would not expect this to return a non-dataframe
+
+    if isinstance(df, pd.DataFrame):
+        return _ensure_panda_df_homogeneous(df, str)
+    else:
+        return _ensure_cudf_df_homogeneous(df, str)
 
 
 def convert_dictionary_to_structured_array(source: Mapping[str, Sequence[Any]]):

@@ -32,6 +32,7 @@ from .utils import (
 
 try:
     import cupy as cp 
+    import cupyx as cpx
     import cudf as cd
 except:
     cp = None
@@ -39,7 +40,7 @@ except:
 
 sparse_types = [sparse.csr_matrix, sparse.csc_matrix]
 if cp:
-    sparse_types.extend([cp.sparse.csr_matrix, cp.sparse.csc_matrix])
+    sparse_types.extend([cpx.scipy.sparse.csr_matrix, cpx.scipy.sparse.csc_matrix])
 
 
 H5Group = Union[h5py.Group, h5py.File]
@@ -438,7 +439,7 @@ def read_h5ad(
         else:
             raise ValueError()
 
-    d['use_gpu'] = use_gpu
+    # d['use_gpu'] = use_gpu
     _clean_uns(d)  # backwards compat
 
     return AnnData(**d)
@@ -510,7 +511,10 @@ def read_series(dataset) -> SeriesTypeUnion:
             )
         return pd.Categorical.from_codes(dataset[...], categories, ordered=ordered)
     else:
-        return dataset[...]
+        if cp:
+            return cd.Series(dataset, dtype=dataset.dtype)
+        else:
+            return dataset[...]
 
 
 # @report_read_key_on_error
@@ -572,9 +576,9 @@ def read_dense_as_sparse(
         return read_dense_as_csr(dataset, axis_chunk)
     elif sparse_format == sparse.csc_matrix:
         return read_dense_as_csc(dataset, axis_chunk)
-    elif sparse_format == cp.sparse.csr_matrix:
+    elif sparse_format == cpx.scipy.sparse.csr_matrix:
         return read_dense_as_cupy_csr(dataset, axis_chunk)
-    elif sparse_format == cp.sparse.csc_matrix:
+    elif sparse_format == cpx.scipy.sparse.csc_matrix:
         return read_dense_as_cupy_csc(dataset, axis_chunk)
     else:
         raise ValueError(f"Cannot read dense array as type: {sparse_format}")
@@ -601,7 +605,7 @@ def read_dense_as_cupy_csr(dataset, axis_chunk=6000):
     sub_matrices = []
     for idx in idx_chunks_along_axis(dataset.shape, 0, axis_chunk):
         dense_chunk = dataset[idx]
-        sub_matrix = cp.sparse.csr_matrix(dense_chunk)
+        sub_matrix = cpx.scipy.sparse.csr_matrix(dense_chunk)
         sub_matrices.append(sub_matrix)
     return cp.vstack(sub_matrices, format="csr")
 
@@ -609,6 +613,6 @@ def read_dense_as_cupy_csr(dataset, axis_chunk=6000):
 def read_dense_as_cupy_csc(dataset, axis_chunk=6000):
     sub_matrices = []
     for idx in idx_chunks_along_axis(dataset.shape, 1, axis_chunk):
-        sub_matrix = cp.sparse.csr_matrix(dataset[idx])
+        sub_matrix = cpx.scipy.sparse.csr_matrix(dataset[idx])
         sub_matrices.append(sub_matrix)
     return cp.hstack(sub_matrices, format="csc")

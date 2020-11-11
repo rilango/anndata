@@ -1,3 +1,4 @@
+import os
 from itertools import product
 
 import numpy as np
@@ -11,59 +12,140 @@ from anndata import AnnData
 from anndata.tests.helpers import assert_equal, gen_adata
 
 
+try:
+    import cudf as cd
+    import cupy as cp
+    import cupyx as cpx
+    from cupyx.scipy import sparse as csp
+except KeyError as Exception:
+    cp = None
+    cpx = None
+
+
 # some test objects that we use below
-adata_dense = AnnData(np.array([[1, 2], [3, 4]]))
-adata_dense.layers["test"] = adata_dense.X
-adata_sparse = AnnData(
-    csr_matrix([[0, 2, 3], [0, 5, 6]]),
-    dict(obs_names=["s1", "s2"], anno1=["c1", "c2"]),
-    dict(var_names=["a", "b", "c"]),
-)
+def create_dense(use_gpu):
+    if use_gpu:
+        adata_dense = AnnData(cp.array([[1, 2], [3, 4]]),)
+        adata_dense.layers["test"] = adata_dense.X
+    else:
+        adata_dense = AnnData(np.array([[1, 2], [3, 4]]))
+        adata_dense.layers["test"] = adata_dense.X
+
+    return adata_dense
 
 
-def test_creation():
-    AnnData(np.array([[1, 2], [3, 4]]))
-    AnnData(np.array([[1, 2], [3, 4]]), {}, {})
+def create_sparse(use_gpu):
+    if use_gpu:
+        adata_sparse = AnnData(
+        cpx.scipy.sparse.csr_matrix(
+            cp.array([[0, 2, 3], [0, 5, 6]], dtype=cp.float32)),
+        dict(obs_names=["s1", "s2"], anno1=["c1", "c2"]),
+        dict(var_names=["a", "b", "c"]),
+        )
+    else:
+        # some test objects that we use below
+        adata_sparse = AnnData(
+            csr_matrix([[0, 2, 3], [0, 5, 6]]),
+            dict(obs_names=["s1", "s2"], anno1=["c1", "c2"]),
+            dict(var_names=["a", "b", "c"]),
+        )
+    return adata_sparse
+
+
+def test_creation(use_gpu):
+    if use_gpu:
+        np_fr = cp
+        sp_fr = csp
+    else:
+        np_fr = np
+        sp_fr = sp
+
+    AnnData(np_fr.array([[1, 2], [3, 4]]))
+    AnnData(np_fr.array([[1, 2], [3, 4]]), {}, {})
+
+    #TODO: Findout how to address masked_array for GPU
     AnnData(ma.array([[1, 2], [3, 4]]), uns=dict(mask=[0, 1, 1, 0]))
-    AnnData(sp.eye(2))
-    X = np.array([[1, 2, 3], [4, 5, 6]])
+    AnnData(sp_fr.eye(2))
+    X = np_fr.array([[1, 2, 3], [4, 5, 6]])
     adata = AnnData(
         X=X,
         obs=dict(Obs=["A", "B"]),
         var=dict(Feat=["a", "b", "c"]),
-        obsm=dict(X_pca=np.array([[1, 2], [3, 4]])),
+        obsm=dict(X_pca=np_fr.array([[1, 2], [3, 4]])),
         raw=dict(X=X, var=dict(var_names=["a", "b", "c"])),
     )
+
+    if use_gpu:
+        assert isinstance(adata.X, cp.ndarray)
+    else:
+        assert isinstance(adata.X, np.ndarray)
 
     assert adata.raw.X.tolist() == X.tolist()
     assert adata.raw.var_names.tolist() == ["a", "b", "c"]
 
     with pytest.raises(ValueError):
-        AnnData(np.array([[1, 2], [3, 4]]), dict(TooLong=[1, 2, 3, 4]))
+        AnnData(np_fr.array([[1, 2], [3, 4]]), dict(TooLong=[1, 2, 3, 4]))
 
     # init with empty data matrix
     shape = (3, 5)
-    adata = AnnData(None, uns=dict(test=np.array((3, 3))), shape=shape)
+    adata = AnnData(None, uns=dict(test=np_fr.array((3, 3))), shape=shape)
     assert adata.X is None
     assert adata.shape == shape
     assert "test" in adata.uns
 
+    if use_gpu:
+        assert isinstance(adata.uns['test'], cp.ndarray)
+    else:
+        assert isinstance(adata.uns['test'], np.ndarray)
 
-def test_create_with_dfs():
-    X = np.ones((6, 3))
-    obs = pd.DataFrame(dict(cat_anno=pd.Categorical(["a", "a", "a", "a", "b", "a"])))
+
+def test_create_with_dfs(use_gpu):
+    if use_gpu:
+        np_fr = cp
+        pd_fr = cd
+    else:
+        np_fr = np
+        pd_fr = pd
+
+    X = np_fr.ones((6, 3))
+
+    if use_gpu:
+        obs = pd_fr.DataFrame(
+            dict(cat_anno=pd_fr.Series(["a", "a", "a", "a", "b", "a"], dtype='category')))
+    else:
+        obs = pd_fr.DataFrame(
+            dict(cat_anno=pd_fr.Categorical(["a", "a", "a", "a", "b", "a"])))
+        
     obs_copy = obs.copy()
     adata = AnnData(X=X, obs=obs)
     assert obs.index.equals(obs_copy.index)
     assert obs.index.astype(str).equals(adata.obs.index)
 
+    if use_gpu:
+        assert isinstance(adata.obs, cd.DataFrame)
+    else:
+        assert isinstance(adata.obs, pd.DataFrame)
 
-def test_create_from_df():
-    df = pd.DataFrame(np.ones((3, 2)), index=["a", "b", "c"], columns=["A", "B"])
+
+def test_create_from_df(use_gpu):
+    if use_gpu:
+        np_fr = cp
+        pd_fr = cd
+    else:
+        np_fr = np
+        pd_fr = pd
+
+    df = pd_fr.DataFrame(np_fr.ones((3, 2)), index=["a", "b", "c"], columns=["A", "B"])
     ad = AnnData(df)
-    assert df.values.tolist() == ad.X.tolist()
-    assert df.columns.tolist() == ad.var_names.tolist()
-    assert df.index.tolist() == ad.obs_names.tolist()
+
+    if use_gpu:
+        assert df.values.get().tolist() == ad.X.get().tolist()
+        assert df.columns.to_list() == ad.var_names.to_arrow().to_pylist()
+        assert df.index.to_arrow().to_pylist() == ad.obs_names.to_arrow().to_pylist()
+    else:
+        assert df.values.tolist() == ad.X.tolist()
+        assert df.columns.tolist() == ad.var_names.tolist()
+        assert df.index.tolist() == ad.obs_names.tolist()
 
 
 def test_create_from_sparse_df():

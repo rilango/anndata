@@ -146,6 +146,12 @@ def warn_names_duplicates(attr: str):
         f"To make them unique, call `.{attr}_names_make_unique`."
     )
 
+def use_gpu(value):
+    return cd and cp and (
+            isinstance(value, cp.ndarray) or
+            isinstance(value, cpx.scipy.sparse.spmatrix) or
+            isinstance(value, cd.DataFrame))
+
 
 def _ensure_panda_df_homogeneous(
     df: cd.DataFrame, name: str
@@ -167,7 +173,7 @@ def _ensure_cudf_df_homogeneous(
     else:
         arr = cp.array(df.as_gpu_matrix())
     if df.dtypes.nunique() != 1:
-        warnings.warn(f"{name} converted to numpy array with dtype {arr.dtype}")
+        warnings.warn(f"{name} converted to cupy array with dtype {arr.dtype}")
     return arr
 
 

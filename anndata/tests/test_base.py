@@ -123,7 +123,7 @@ def test_create_with_dfs(use_gpu):
     else:
         obs = pd_fr.DataFrame(
             dict(cat_anno=pd_fr.Categorical(["a", "a", "a", "a", "b", "a"])))
-        
+
     obs_copy = obs.copy()
     adata = AnnData(X=X, obs=obs)
     assert obs.index.equals(obs_copy.index)
@@ -156,7 +156,7 @@ def test_create_from_df(use_gpu):
         assert df.index.tolist() == ad.obs_names.tolist()
 
 
-@pytest.mark.skipif_hw('gpu')
+@pytest.mark.skipif_hw('gpu', reason='String is not supported in GPU sparse matrix')
 def test_create_from_sparse_df():
     s = sp.random(20, 30, density=0.2)
     obs_names = [f"obs{i}" for i in range(20)]
@@ -168,14 +168,26 @@ def test_create_from_sparse_df():
     assert issparse(a.X)
 
 
-def test_create_from_df_with_obs_and_var():
-    df = pd.DataFrame(np.ones((3, 2)), index=["a", "b", "c"], columns=["A", "B"])
-    obs = pd.DataFrame(np.ones((3, 1)), index=df.index, columns=["C"])
-    var = pd.DataFrame(np.ones((2, 1)), index=df.columns, columns=["D"])
+def test_create_from_df_with_obs_and_var(use_gpu):
+    if use_gpu:
+        np_fr = cp
+        pd_fr = cd
+    else:
+        np_fr = np
+        pd_fr = pd
+
+    df = pd_fr.DataFrame(np_fr.ones((3, 2)), index=["a", "b", "c"], columns=["A", "B"])
+    obs = pd_fr.DataFrame(np_fr.ones((3, 1)), index=df.index, columns=["C"])
+    var = pd_fr.DataFrame(np_fr.ones((2, 1)), index=df.columns, columns=["D"])
     ad = AnnData(df, obs=obs, var=var)
-    assert df.values.tolist() == ad.X.tolist()
-    assert df.columns.tolist() == ad.var_names.tolist()
-    assert df.index.tolist() == ad.obs_names.tolist()
+    if use_gpu:
+        assert df.values.get().tolist() == ad.X.get().tolist()
+        assert df.columns.to_list() == ad.var_names.to_arrow().to_pylist()
+        assert df.index.to_arrow().to_pylist() == ad.obs_names.to_arrow().to_pylist()
+    else:
+        assert df.values.tolist() == ad.X.tolist()
+        assert df.columns.tolist() == ad.var_names.tolist()
+        assert df.index.tolist() == ad.obs_names.tolist()
     assert obs.equals(ad.obs)
     assert var.equals(ad.var)
 
@@ -185,17 +197,24 @@ def test_create_from_df_with_obs_and_var():
         AnnData(df, var=var.reset_index())
 
 
+@pytest.mark.skipif_hw('gpu', reason='cudf.Categorical is not yet implemented')
 def test_from_df_and_dict():
     df = pd.DataFrame(dict(a=[0.1, 0.2, 0.3], b=[1.1, 1.2, 1.3]))
     adata = AnnData(df, dict(species=pd.Categorical(["a", "b", "a"])))
     assert adata.obs["species"].values.tolist() == ["a", "b", "a"]
 
 
-def test_df_warnings():
-    df = pd.DataFrame(dict(A=[1, 2, 3], B=[1.0, 2.0, 3.0]), index=["a", "b", "c"])
-    with pytest.warns(UserWarning, match=r"X.*dtype float64"):
+def test_df_warnings(use_gpu):
+    if use_gpu:
+        pd_fr = cd
+    else:
+        pd_fr = pd
+
+    df = pd_fr.DataFrame(dict(A=[1, 2, 3], B=[1.0, 2.0, 3.0]), index=["a", "b", "c"])
+
+    with pytest.warns(UserWarning, match=r".*dtype float64"):
         adata = AnnData(df)
-    with pytest.warns(UserWarning, match=r"X.*dtype float64"):
+    with pytest.warns(UserWarning, match=r".*dtype float64"):
         adata.X = df
 
 

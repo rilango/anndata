@@ -13,6 +13,7 @@ def pytest_addoption(parser):
                      default='cpu',
                     )
 
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", 

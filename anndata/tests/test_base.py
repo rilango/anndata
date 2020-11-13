@@ -23,6 +23,15 @@ except KeyError as Exception:
 
 
 # some test objects that we use below
+adata_dense = AnnData(np.array([[1, 2], [3, 4]]))
+adata_dense.layers["test"] = adata_dense.X
+adata_sparse = AnnData(
+    csr_matrix([[0, 2, 3], [0, 5, 6]]),
+    dict(obs_names=["s1", "s2"], anno1=["c1", "c2"]),
+    dict(var_names=["a", "b", "c"]),
+)
+
+
 def create_dense(use_gpu):
     if use_gpu:
         adata_dense = AnnData(cp.array([[1, 2], [3, 4]]),)
@@ -43,7 +52,6 @@ def create_sparse(use_gpu):
         dict(var_names=["a", "b", "c"]),
         )
     else:
-        # some test objects that we use below
         adata_sparse = AnnData(
             csr_matrix([[0, 2, 3], [0, 5, 6]]),
             dict(obs_names=["s1", "s2"], anno1=["c1", "c2"]),
@@ -148,6 +156,7 @@ def test_create_from_df(use_gpu):
         assert df.index.tolist() == ad.obs_names.tolist()
 
 
+@pytest.mark.skipif_hw('gpu')
 def test_create_from_sparse_df():
     s = sp.random(20, 30, density=0.2)
     obs_names = [f"obs{i}" for i in range(20)]

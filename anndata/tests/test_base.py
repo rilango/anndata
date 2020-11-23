@@ -17,8 +17,10 @@ try:
     import cupy as cp
     import cupyx as cpx
     from cupyx.scipy import sparse as csp
-except KeyError as Exception:
+except (KeyError, ModuleNotFoundError):
+    cd = None
     cp = None
+    cd = None
     cpx = None
 
 
@@ -218,8 +220,11 @@ def test_df_warnings(use_gpu):
         adata.X = df
 
 
-def test_attr_deletion():
-    full = gen_adata((30, 30))
+@pytest.mark.skipif_hw('gpu', reason='TODO: Skiping to fix conversion issue')
+def test_attr_deletion(use_gpu):
+    full = gen_adata((30, 30),
+                     sp.csr_matrix if not use_gpu else cpx.scipy.sparse.csr_matrix,
+                     use_gpu=use_gpu)
     # Empty has just X, obs_names, var_names
     empty = AnnData(full.X, obs=full.obs[[]], var=full.var[[]])
     for attr in ["obs", "var", "obsm", "varm", "obsp", "varp", "layers", "uns"]:
@@ -228,20 +233,31 @@ def test_attr_deletion():
     assert_equal(full, empty, exact=True)
 
 
-def test_names():
+def test_names(use_gpu):
+    if use_gpu:
+        arr_type = cp.array
+    else:
+        arr_type = np.array
+
     adata = AnnData(
-        np.array([[1, 2, 3], [4, 5, 6]]),
+        arr_type([[1, 2, 3], [4, 5, 6]]),
         dict(obs_names=["A", "B"]),
         dict(var_names=["a", "b", "c"]),
     )
 
+    if use_gpu:
+        assert isinstance(adata.X, cp.ndarray)
+    else:
+        assert isinstance(adata.X, np.ndarray)
+
     assert adata.obs_names.tolist() == "A B".split()
     assert adata.var_names.tolist() == "a b c".split()
 
-    adata = AnnData(np.array([[1, 2], [3, 4], [5, 6]]), var=dict(var_names=["a", "b"]))
+    adata = AnnData(arr_type([[1, 2], [3, 4], [5, 6]]), var=dict(var_names=["a", "b"]))
     assert adata.var_names.tolist() == ["a", "b"]
 
 
+@pytest.mark.skipif_hw('gpu')
 @pytest.mark.parametrize(
     "names,after",
     [
@@ -255,6 +271,34 @@ def test_names():
 @pytest.mark.parametrize("attr", ["obs_names", "var_names"])
 def test_setting_index_names(names, after, attr):
     adata = adata_dense.copy()
+    assert getattr(adata, attr).name is None
+    setattr(adata, attr, names)
+    assert getattr(adata, attr).name == after
+    if hasattr(names, "name"):
+        assert names.name is not None
+
+    # Testing for views
+    new = adata[:, :]
+    assert new.is_view
+    setattr(new, attr, names)
+    assert_equal(new, adata, exact=True)
+    assert not new.is_view
+
+
+@pytest.mark.skipif_hw('cpu')
+@pytest.mark.parametrize(
+    "names,after",
+    [
+        pytest.param(["a", "b"], None, id="list"),
+        pytest.param(
+            cd.Series(["AAD", "CCA"], name="barcodes"), "barcodes", id="Series-str"
+        ),
+        pytest.param(cd.Series(["x", "y"], name=0), None, id="Series-int"),
+    ],
+)
+@pytest.mark.parametrize("attr", ["obs_names", "var_names"])
+def test_setting_index_names_gpu(names, after, attr):
+    adata = create_dense(True)
     assert getattr(adata, attr).name is None
     setattr(adata, attr, names)
     assert getattr(adata, attr).name == after

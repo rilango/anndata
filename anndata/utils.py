@@ -17,6 +17,7 @@ try:
     import cudf as cd
     import cupyx as cpx
 except:
+    cd = None
     cp = None
     cd = None
 
@@ -152,28 +153,28 @@ def use_gpu(value):
             isinstance(value, cpx.scipy.sparse.spmatrix) or
             isinstance(value, cd.DataFrame))
 
+if cd:
+    def _ensure_cudf_df_homogeneous(
+        df: cd.DataFrame, name: str
+    ) -> Union[cp.ndarray, cpx.scipy.sparse.csr_matrix]:
+        if all(isinstance(dt, pd.SparseDtype) for dt in df.dtypes):
+            arr = df.sparse.to_coo().tocsr()
+        else:
+            arr = cp.array(df.as_gpu_matrix())
+        if df.dtypes.nunique() != 1:
+            warnings.warn(f"{name} converted to cupy array with dtype {arr.dtype}")
+        return arr
+
 
 def _ensure_panda_df_homogeneous(
-    df: cd.DataFrame, name: str
-) -> Union[cp.ndarray, cpx.scipy.sparse.csr_matrix]:
+    df: pd.DataFrame, name: str
+) -> Union[np.ndarray, sparse.csr_matrix]:
     if all(isinstance(dt, pd.SparseDtype) for dt in df.dtypes):
         arr = df.sparse.to_coo().tocsr()
     else:
         arr = df.to_numpy()
     if df.dtypes.nunique() != 1:
         warnings.warn(f"{name} converted to numpy array with dtype {arr.dtype}")
-    return arr
-
-
-def _ensure_cudf_df_homogeneous(
-    df: pd.DataFrame, name: str
-) -> Union[np.ndarray, sparse.csr_matrix]:
-    if all(isinstance(dt, pd.SparseDtype) for dt in df.dtypes):
-        arr = df.sparse.to_coo().tocsr()
-    else:
-        arr = cp.array(df.as_gpu_matrix())
-    if df.dtypes.nunique() != 1:
-        warnings.warn(f"{name} converted to cupy array with dtype {arr.dtype}")
     return arr
 
 

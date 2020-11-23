@@ -18,6 +18,18 @@ from anndata._core.aligned_mapping import AlignedMapping
 from anndata.utils import asarray
 
 
+try:
+    import cudf as cd
+    import cupy as cp
+    import cupyx as cpx
+    from cupyx.scipy import sparse as csp
+except (KeyError, ModuleNotFoundError):
+    cd = None
+    cp = None
+    cd = None
+    cpx = None
+
+
 def gen_vstr_recarray(m, n, dtype=None):
     size = m * n
     lengths = np.random.randint(3, 5, size)
@@ -29,8 +41,7 @@ def gen_vstr_recarray(m, n, dtype=None):
     )
 
 
-def gen_typed_df(n, index=None):
-    # TODO: Think about allowing index to be passed for n
+def _gen_typed_df_cpu(n, index=None):
     letters = np.fromiter(iter(ascii_letters), "U1")
     if n > len(letters):
         letters = letters[: n // 2]  # Make sure categories are repeated
@@ -44,6 +55,29 @@ def gen_typed_df(n, index=None):
         ),
         index=index,
     )
+
+if cd:
+    def _gen_typed_df_gpu(n, index=None):
+        letters = np.fromiter(iter(ascii_letters), "U1")
+        if n > len(letters):
+            letters = letters[: n // 2]  # Make sure categories are repeated
+        return cd.DataFrame(
+            dict(
+                cat=cd.Series(np.random.choice(letters, n).tolist(), dtype='category'),
+                cat_ordered=cd.Series(np.random.choice(letters, n).tolist(), dtype='category').cat.as_ordered(),
+                int64=cd.Series(cp.random.randint(-50, 50, n)),
+                float64=cd.Series(cp.random.random(n)),
+                uint8=cd.Series(cp.random.randint(255, size=n, dtype="uint8")),
+            ),
+            index=index,
+        )
+
+
+def gen_typed_df(n, index=None, use_gpu=False):
+    if use_gpu:
+        return _gen_typed_df_gpu(n, index=index)
+    else:
+        return _gen_typed_df_cpu(n, index=index)
 
 
 def gen_typed_df_t2_size(m, n, index=None, columns=None) -> pd.DataFrame:
@@ -71,6 +105,7 @@ def gen_adata(
     obsm_types: "Collection[Type]" = (sparse.csr_matrix, np.ndarray, pd.DataFrame),
     varm_types: "Collection[Type]" = (sparse.csr_matrix, np.ndarray, pd.DataFrame),
     layers_types: "Collection[Type]" = (sparse.csr_matrix, np.ndarray, pd.DataFrame),
+    use_gpu: bool = False,
 ) -> AnnData:
     """\
     Helper function to generate a random AnnData for testing purposes.
@@ -94,12 +129,19 @@ def gen_adata(
         What kinds of containers should be in `.varm`?
     layers_types
         What kinds of containers should be in `.layers`?
+    use_gpu
+        What hw to use? True for GPU and False for CPU.
     """
     M, N = shape
-    obs_names = pd.Index(f"cell{i}" for i in range(shape[0]))
-    var_names = pd.Index(f"gene{i}" for i in range(shape[1]))
-    obs = gen_typed_df(M, obs_names)
-    var = gen_typed_df(N, var_names)
+    if use_gpu:
+        obs_names = cd.Index(f"cell{i}" for i in range(shape[0]))
+        var_names = cd.Index(f"gene{i}" for i in range(shape[1]))
+    else:
+        obs_names = pd.Index(f"cell{i}" for i in range(shape[0]))
+        var_names = pd.Index(f"gene{i}" for i in range(shape[1]))
+
+    obs = gen_typed_df(M, obs_names, use_gpu=use_gpu)
+    var = gen_typed_df(N, var_names, use_gpu=use_gpu)
     # For #147
     obs.rename(columns=dict(cat="obs_cat"), inplace=True)
     var.rename(columns=dict(cat="var_cat"), inplace=True)
@@ -130,8 +172,14 @@ def gen_adata(
         O_recarray=gen_vstr_recarray(N, 5),
         # U_recarray=gen_vstr_recarray(N, 5, "U4")
     )
+
+    if X_type == sparse.csr_matrix:
+        X = np.random.binomial(100, 0.005, (M, N)).astype(X_dtype)
+    else:
+        X = cp.random.binomial(100, 0.005, (M, N)).astype(X_dtype)
+
     adata = AnnData(
-        X=X_type(np.random.binomial(100, 0.005, (M, N)).astype(X_dtype)),
+        X=X_type(X),
         obs=obs,
         var=var,
         obsm=obsm,

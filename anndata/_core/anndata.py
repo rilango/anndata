@@ -369,7 +369,7 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         vidx: Index1D = None,
         use_gpu: bool = False,
     ):
-        self.use_gpu = use_gpu,
+        self.use_gpu = use_gpu
 
         if asview:
             if not isinstance(X, AnnData):

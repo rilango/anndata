@@ -316,6 +316,7 @@ def test_setting_dim_index(dim):
     setattr(curr, index_attr, new_idx)
     pd.testing.assert_index_equal(getattr(curr, index_attr), new_idx)
     pd.testing.assert_index_equal(getattr(curr, mapping_attr)["df"].index, new_idx)
+    pd.testing.assert_index_equal(getattr(curr, mapping_attr).dim_names, new_idx)
     pd.testing.assert_index_equal(curr.obs_names, curr.raw.obs_names)
 
     # Testing view behaviour
@@ -323,11 +324,16 @@ def test_setting_dim_index(dim):
     assert not view.is_view
     pd.testing.assert_index_equal(getattr(view, index_attr), new_idx)
     pd.testing.assert_index_equal(getattr(view, mapping_attr)["df"].index, new_idx)
+    pd.testing.assert_index_equal(getattr(view, mapping_attr).dim_names, new_idx)
     with pytest.raises(AssertionError):
         pd.testing.assert_index_equal(
             getattr(view, index_attr), getattr(orig, index_attr)
         )
     assert_equal(view, curr, exact=True)
+
+    # test case in #459
+    fake_m = pd.DataFrame(curr.X.T, index=getattr(curr, index_attr))
+    getattr(curr, mapping_attr)["df2"] = fake_m
 
 
 def test_indices_dtypes():

@@ -173,10 +173,10 @@ def gen_adata(
         # U_recarray=gen_vstr_recarray(N, 5, "U4")
     )
 
-    if X_type == sparse.csr_matrix:
-        X = np.random.binomial(100, 0.005, (M, N)).astype(X_dtype)
-    else:
+    if use_gpu:
         X = cp.random.binomial(100, 0.005, (M, N)).astype(X_dtype)
+    else:
+        X = np.random.binomial(100, 0.005, (M, N)).astype(X_dtype)
 
     adata = AnnData(
         X=X_type(X),

@@ -1,4 +1,5 @@
 from importlib.util import find_spec
+from os import PathLike
 from pathlib import Path
 from string import ascii_letters
 import tempfile
@@ -333,6 +334,38 @@ def test_write_csv(typ, tmp_path):
     adata.write_csvs(tmp_path / "test_csv_dir", skip_data=False)
 
 
+@pytest.mark.parametrize("typ", [np.array, csr_matrix])
+def test_write_csv_view(typ, tmp_path):
+    # https://github.com/theislab/anndata/issues/401
+    import hashlib
+
+    def md5_path(pth: PathLike) -> bytes:
+        checksum = hashlib.md5()
+        with open(pth, "rb") as f:
+            while True:
+                buf = f.read(checksum.block_size * 100)
+                if not buf:
+                    break
+                checksum.update(buf)
+        return checksum.digest()
+
+    def hash_dir_contents(dir: Path) -> "dict[str, bytes]":
+        root_pth = str(dir)
+        return {
+            str(k)[len(root_pth) :]: md5_path(k) for k in dir.rglob("*") if k.is_file()
+        }
+
+    adata = ad.AnnData(typ(X_list), obs=obs_dict, var=var_dict, uns=uns_dict)
+
+    # Test writing a view
+    view_pth = tmp_path / "test_view_csv_dir"
+    copy_pth = tmp_path / "test_copy_csv_dir"
+    adata[::2].write_csvs(view_pth, skip_data=False)
+    adata[::2].copy().write_csvs(copy_pth, skip_data=False)
+
+    assert hash_dir_contents(view_pth) == hash_dir_contents(copy_pth)
+
+
 @pytest.mark.parametrize(
     ["read", "write", "name"],
     [
@@ -445,6 +478,33 @@ def test_write_large_categorical(tmp_path, diskfmt):
     getattr(orig, f"write_{diskfmt}")(adata_pth)
     curr = getattr(ad, f"read_{diskfmt}")(adata_pth)
     assert_equal(orig, curr)
+
+
+def test_write_string_types(tmp_path, diskfmt):
+    # https://github.com/theislab/anndata/issues/456
+    adata_pth = tmp_path / f"adata.{diskfmt}"
+
+    adata = ad.AnnData(
+        np.ones((3, 3)),
+        obs=pd.DataFrame(
+            np.ones((3, 2)),
+            columns=["a", np.str_("b")],
+            index=["a", "b", "c"],
+        ),
+    )
+
+    write = getattr(adata, f"write_{diskfmt}")
+    read = getattr(ad, f"read_{diskfmt}")
+
+    write(adata_pth)
+    from_disk = read(adata_pth)
+
+    assert_equal(adata, from_disk)
+
+    adata.obs[b"c"] = np.zeros(3)
+    # This should error, and tell you which key is at fault
+    with pytest.raises(TypeError, match=str(b"c")):
+        write(adata_pth)
 
 
 def test_zarr_chunk_X(tmp_path):

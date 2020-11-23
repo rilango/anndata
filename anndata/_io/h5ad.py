@@ -19,8 +19,15 @@ from .._core.sparse_dataset import SparseDataset
 from .._core.file_backing import AnnDataFileManager
 from .._core.anndata import AnnData, DataFrameTypesUnion, SeriesTypeUnion, MatrixTypesUnion
 from .._core.raw import Raw
-from ..compat import _from_fixed_length_strings, _clean_uns, Literal
+from ..compat import (
+    _from_fixed_length_strings,
+    _decode_structured_array,
+    _clean_uns,
+    Literal,
+)
 from .utils import (
+    H5PY_V3,
+    check_key,
     report_read_key_on_error,
     report_write_key_on_error,
     idx_chunks_along_axis,
@@ -31,7 +38,7 @@ from .utils import (
 )
 
 try:
-    import cupy as cp 
+    import cupy as cp
     import cupyx as cpx
     import cudf as cd
 except:
@@ -253,20 +260,24 @@ def write_dataframe(f, key, df, dataset_kwargs=MappingProxyType({})):
     for reserved in ("__categories", "_index"):
         if reserved in df.columns:
             raise ValueError(f"{reserved!r} is a reserved name for dataframe columns.")
-    group = f.create_group(key)
-    group.attrs["encoding-type"] = "dataframe"
-    group.attrs["encoding-version"] = EncodingVersions.dataframe.value
-    group.attrs["column-order"] = list(df.columns)
+
+    col_names = [check_key(c) for c in df.columns]
 
     if df.index.name is not None:
         index_name = df.index.name
     else:
         index_name = "_index"
+    index_name = check_key(index_name)
+
+    group = f.create_group(key)
+    group.attrs["encoding-type"] = "dataframe"
+    group.attrs["encoding-version"] = EncodingVersions.dataframe.value
+    group.attrs["column-order"] = col_names
     group.attrs["_index"] = index_name
 
     write_series(group, index_name, df.index, dataset_kwargs=dataset_kwargs)
-    for colname, series in df.items():
-        write_series(group, colname, series, dataset_kwargs=dataset_kwargs)
+    for col_name, (_, series) in zip(col_names, df.items()):
+        write_series(group, col_name, series, dataset_kwargs=dataset_kwargs)
 
 
 @report_write_key_on_error
@@ -423,9 +434,9 @@ def read_h5ad(
             elif k == "raw":
                 assert False, "unexpected raw format"
             elif k in {"obs", "var"}:
-                d[k] = read_dataframe(f[k], use_gpu)
+                d[k] = read_dataframe(f[k], use_gpu=use_gpu)
             else:  # Base case
-                d[k] = read_attribute(f[k], use_gpu)
+                d[k] = read_attribute(f[k])
 
         d["raw"] = _read_raw(f, as_sparse, rdasp)
 
@@ -467,9 +478,17 @@ def _read_raw(
 @report_read_key_on_error
 def read_dataframe_legacy(dataset, use_gpu=False) -> DataFrameTypesUnion:
     """Read pre-anndata 0.7 dataframes."""
-
     frwk = cd if use_gpu else pd
-    df = frwk.DataFrame(_from_fixed_length_strings(dataset[()]))
+
+    if H5PY_V3:
+        df = frwk.DataFrame(
+            _decode_structured_array(
+                _from_fixed_length_strings(dataset[()]), dtype=dataset.dtype
+            )
+        )
+    else:
+        df = frwk.DataFrame(_from_fixed_length_strings(dataset[()]))
+
     df.set_index(df.columns[0], inplace=True)
     return df
 
@@ -498,7 +517,7 @@ def read_series(dataset) -> SeriesTypeUnion:
         categories = dataset.attrs["categories"]
         if isinstance(categories, h5py.Reference):
             categories_dset = dataset.parent[dataset.attrs["categories"]]
-            categories = categories_dset[...]
+            categories = read_dataset(categories_dset)
             ordered = bool(categories_dset.attrs.get("ordered", False))
         else:
             # TODO: remove this code at some point post 0.7
@@ -509,12 +528,11 @@ def read_series(dataset) -> SeriesTypeUnion:
                 "AnnData. Rewrite the file ensure you can read it in the future.",
                 FutureWarning,
             )
-        return pd.Categorical.from_codes(dataset[...], categories, ordered=ordered)
+        return pd.Categorical.from_codes(
+            read_dataset(dataset), categories, ordered=ordered
+        )
     else:
-        if cp:
-            return cd.Series(dataset, dtype=dataset.dtype)
-        else:
-            return dataset[...]
+        return read_dataset(dataset)
 
 
 # @report_read_key_on_error
@@ -550,6 +568,10 @@ def read_group(group: h5py.Group, use_gpu=False) -> Union[dict, DataFrameTypesUn
 @read_attribute.register(h5py.Dataset)
 @report_read_key_on_error
 def read_dataset(dataset: h5py.Dataset):
+    if H5PY_V3:
+        string_dtype = h5py.check_string_dtype(dataset.dtype)
+        if (string_dtype is not None) and (string_dtype.encoding == "utf-8"):
+            dataset = dataset.asstr()
     value = dataset[()]
     if not hasattr(value, "dtype"):
         return value
@@ -562,7 +584,10 @@ def read_dataset(dataset: h5py.Dataset):
             return value[0]
     elif len(value.dtype.descr) > 1:  # Compound dtype
         # For backwards compat, now strings are written as variable length
+        dtype = value.dtype
         value = _from_fixed_length_strings(value)
+        if H5PY_V3:
+            value = _decode_structured_array(value, dtype=dtype)
     if value.shape == ():
         value = value[()]
     return value

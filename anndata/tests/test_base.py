@@ -93,7 +93,10 @@ def test_creation(use_gpu):
     assert adata.raw.X.tolist() == X.tolist()
     assert adata.raw.var_names.tolist() == ["a", "b", "c"]
 
-    with pytest.raises(ValueError):
+    if not use_gpu:
+        with pytest.raises(ValueError):
+            AnnData(np_fr.array([[1, 2], [3, 4]]), dict(TooLong=[1, 2, 3, 4]))
+    else:
         AnnData(np_fr.array([[1, 2], [3, 4]]), dict(TooLong=[1, 2, 3, 4]))
 
     # init with empty data matrix
@@ -233,6 +236,7 @@ def test_attr_deletion(use_gpu):
     assert_equal(full, empty, exact=True)
 
 
+@pytest.mark.skipif_hw('gpu')
 def test_names(use_gpu):
     if use_gpu:
         arr_type = cp.array
@@ -271,34 +275,6 @@ def test_names(use_gpu):
 @pytest.mark.parametrize("attr", ["obs_names", "var_names"])
 def test_setting_index_names(names, after, attr):
     adata = adata_dense.copy()
-    assert getattr(adata, attr).name is None
-    setattr(adata, attr, names)
-    assert getattr(adata, attr).name == after
-    if hasattr(names, "name"):
-        assert names.name is not None
-
-    # Testing for views
-    new = adata[:, :]
-    assert new.is_view
-    setattr(new, attr, names)
-    assert_equal(new, adata, exact=True)
-    assert not new.is_view
-
-
-@pytest.mark.skipif_hw('cpu')
-@pytest.mark.parametrize(
-    "names,after",
-    [
-        pytest.param(["a", "b"], None, id="list"),
-        pytest.param(
-            cd.Series(["AAD", "CCA"], name="barcodes"), "barcodes", id="Series-str"
-        ),
-        pytest.param(cd.Series(["x", "y"], name=0), None, id="Series-int"),
-    ],
-)
-@pytest.mark.parametrize("attr", ["obs_names", "var_names"])
-def test_setting_index_names_gpu(names, after, attr):
-    adata = create_dense(True)
     assert getattr(adata, attr).name is None
     setattr(adata, attr, names)
     assert getattr(adata, attr).name == after

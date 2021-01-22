@@ -38,6 +38,8 @@ from .views import (
     ArrayView,
     DictView,
     DataFrameView,
+    CuDataFrameView,
+    DataFrameTypesUnion,
     as_view,
     _resolve_idxs,
 )
@@ -86,11 +88,6 @@ if cp and cd:
     XTypesUnion = Union[XTypesUnion, cpx.scipy.sparse.spmatrix, cd.DataFrame]
 
 
-DataFrameTypesUnion = Union[pd.DataFrame]
-if cp and cd:
-    DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
-
-
 NDArrayTypesUnion = Union[np.ndarray]
 if cp:
     NDArrayTypesUnion = Union[NDArrayTypesUnion, cp.ndarray]
@@ -107,7 +104,7 @@ if cd:
 
 IndexTypeUnion = Union[pd.Index]
 if cd:
-    IndexTypeUnion = Union[IndexTypeUnion, cd.Index]
+    IndexTypeUnion = Union[IndexTypeUnion, cd.Index, cd.core.index.StringIndex]
 
 # for backwards compat
 def _find_corresponding_multicol_key(key, keys_multicol):
@@ -430,7 +427,11 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         self._remove_unused_categories(adata_ref.var, var_sub, uns_new)
         # set attributes
         self._obs = DataFrameView(obs_sub, view_args=(self, "obs"))
-        self._var = DataFrameView(var_sub, view_args=(self, "var"))
+
+        if isinstance(var_sub, pd.DataFrame):
+            self._var = DataFrameView(var_sub, view_args=(self, "var"))
+        else:
+            self._var = CuDataFrameView(var_sub, view_args=(self, "var"))
         self._uns = DictView(uns_new, view_args=(self, "uns"))
         self._n_obs = len(self.obs)
         self._n_vars = len(self.var)
@@ -549,6 +550,9 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
             if issparse(X) or isinstance(X, ma.MaskedArray) or (cp and cpx.scipy.sparse.issparse(X)):
                 # TODO: maybe use view on data attribute of sparse matrix
                 #       as in readwrite.read_10x_h5
+                if isinstance(X, cpx.scipy.sparse.spmatrix):
+                    self.use_gpu = True
+
                 if X.dtype != np.dtype(dtype):
                     X = X.astype(dtype)
             elif isinstance(X, ZarrArray):
@@ -928,6 +932,9 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
             value = cd.Index(value)
             if not isinstance(value.name, (str, type(None))):
                 value.name = None
+        elif cd and isinstance(value, cd.core.index.StringIndex):
+            if not isinstance(value.name, (str, type(None))):
+                value.name = None
         else:
             value = pd.Index(value)
             if not isinstance(value.name, (str, type(None))):
@@ -951,20 +958,23 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
                 v.index = value
 
     @property
-    def obs(self) -> pd.DataFrame:
+    def obs(self) -> DataFrameTypesUnion:
         """One-dimensional annotation of observations (`pd.DataFrame`)."""
         return self._obs
 
     @obs.setter
-    def obs(self, value: pd.DataFrame):
+    def obs(self, value: DataFrameTypesUnion):
         self._set_dim_df(value, "obs")
 
     @obs.deleter
     def obs(self):
-        self.obs = pd.DataFrame(index=self.obs_names)
+        if self.use_gpu:
+            self.obs = cd.DataFrame(index=self.obs_names)
+        else:
+            self.obs = pd.DataFrame(index=self.obs_names)
 
     @property
-    def obs_names(self) -> pd.Index:
+    def obs_names(self) -> IndexTypeUnion:
         """Names of observations (alias for `.obs.index`)."""
         return self.obs.index
 
@@ -974,17 +984,20 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         self._set_dim_index(names, "obs")
 
     @property
-    def var(self) -> pd.DataFrame:
+    def var(self) -> DataFrameTypesUnion:
         """One-dimensional annotation of variables/ features (`pd.DataFrame`)."""
         return self._var
 
     @var.setter
-    def var(self, value: pd.DataFrame):
+    def var(self, value: DataFrameTypesUnion):
         self._set_dim_df(value, "var")
 
     @var.deleter
     def var(self):
-        self.var = pd.DataFrame(index=self.var_names)
+        if self.use_gpu:
+            self.var = cd.DataFrame(index=self.var_names)
+        else:
+            self.var = pd.DataFrame(index=self.var_names)
 
     @property
     def var_names(self) -> pd.Index:

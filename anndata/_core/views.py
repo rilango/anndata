@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 from functools import reduce, singledispatch, wraps
-from typing import Any, KeysView, Optional, Sequence, Tuple
+from typing import Any, KeysView, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,18 @@ from scipy import sparse
 from .access import ElementRef
 from ..logging import anndata_logger as logger
 from ..compat import ZappyArray
+
+try:
+    import cupy as cp
+    import cupyx as cpx
+    import cudf as cd
+except:
+    cp = None
+    cd = None
+
+DataFrameTypesUnion = Union[pd.DataFrame]
+if cp and cd:
+    DataFrameTypesUnion = Union[DataFrameTypesUnion, cd.DataFrame]
 
 
 class _SetItemMixin:
@@ -112,6 +124,17 @@ class DataFrameView(_ViewMixin, pd.DataFrame):
             df.drop(*args, inplace=True, **kw)
 
 
+class CuDataFrameView(_ViewMixin, cd.DataFrame):
+    _metadata = ["_view_args"]
+
+    @wraps(cd.DataFrame.drop)
+    def drop(self, *args, inplace: bool = False, **kw):
+        if not inplace:
+            return self.copy().drop(*args, **kw)
+        with self._update() as df:
+            df.drop(*args, inplace=True, **kw)
+
+
 @singledispatch
 def as_view(obj, view_args):
     raise NotImplementedError(f"No view type has been registered for {type(obj)}")
@@ -125,6 +148,11 @@ def as_view_array(array, view_args):
 @as_view.register(pd.DataFrame)
 def as_view_df(df, view_args):
     return DataFrameView(df, view_args=view_args)
+
+
+@as_view.register(cd.DataFrame)
+def as_view_df(df, view_args):
+    return CuDataFrameView(df, view_args=view_args)
 
 
 @as_view.register(sparse.csr_matrix)

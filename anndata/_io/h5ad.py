@@ -436,7 +436,7 @@ def read_h5ad(
             elif k in {"obs", "var"}:
                 d[k] = read_dataframe(f[k], use_gpu=use_gpu)
             else:  # Base case
-                d[k] = read_attribute(f[k])
+                d[k] = read_attribute(f[k], use_gpu=use_gpu)
 
         d["raw"] = _read_raw(f, as_sparse, rdasp)
 

@@ -895,8 +895,9 @@ class AnnData(metaclass=utils.DeprecationMixinMeta):
         """Number of variables/features."""
         return self._n_vars
 
-    def _set_dim_df(self, value: pd.DataFrame, attr: str):
-        if not isinstance(value, pd.DataFrame):
+    def _set_dim_df(self, value: DataFrameTypesUnion, attr: str):
+        if not isinstance(value, pd.DataFrame) and\
+            (cd != None and not isinstance(value, cd.DataFrame)):
             raise ValueError(f"Can only assign pd.DataFrame to {attr}.")
         value_idx = self._prep_dim_index(value.index, attr)
         if self.is_view:
